@@ -80,6 +80,7 @@ from base64 import b64encode,b64decode
 from email.utils import format_datetime
 
 from .starlette import *
+from python_multipart.exceptions import MultipartParseError
 
 # %% ../nbs/api/00_core.ipynb #19d3f2a7
 def _params(f): return signature_ex(f, True).parameters
@@ -205,16 +206,21 @@ DEF_MAXPART = 100*1024*1024
 
 # %% ../nbs/api/00_core.ipynb #42c9cea0
 async def parse_form(req: Request) -> FormData:
-    "Starlette errors on empty multipart/json forms, so this checks for that situation"
+    "Starlette errors on empty multipart/json forms and 500s on malformed multipart, so this handles those situations"
     ctype = req.headers.get("Content-Type", "")
     maxpart = getattr(req, "max_part_size", DEF_MAXPART)
     if ctype.startswith("multipart/form-data"):
         try: boundary = ctype.split("boundary=")[1].strip()
         except IndexError: raise HTTPException(400, "Invalid form-data: no boundary")
         if int(req.headers.get("Content-Length", "0")) <= len(boundary) + 6: return FormData()
-        return await req.form(max_part_size=maxpart)
+        try: return await req.form(max_part_size=maxpart)
+        except MultipartParseError as e: raise HTTPException(400, f"Invalid form-data: {e}")
     body = await req.body()  # Cache body for non-multipart request types
-    if ctype == 'application/json': return await req.json() if body else {}
+    if ctype == 'application/json':
+        try: res = await req.json() if body else {}
+        except ValueError: raise HTTPException(400, "Invalid JSON body")
+        if not isinstance(res, dict): raise HTTPException(400, "JSON body must be an object")
+        return res
     return await req.form(max_part_size=maxpart)
 
 # %% ../nbs/api/00_core.ipynb #0caedd04
